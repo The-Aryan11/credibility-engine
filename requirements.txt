@@ -4,3 +4,5 @@ pandas
 pydeck
 fpdf2
 streamlit-autorefresh
+deep-translator
+streamlit-mic-recorder

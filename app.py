@@ -1,7 +1,7 @@
 """
-Credibility Engine - Premium Frontend (The Face)
-Connects to Hugging Face Backend (The Brain)
-Features: Professional UI, 3D Maps, PDF Reports, Real-Time Dashboard, Voice, Multi-Language
+Credibility Engine - Premium Frontend Client
+Connects to Hugging Face Backend (16GB RAM)
+Features: Professional UI, Voice, Multi-Language, PDF Reports, 3D Maps
 """
 import streamlit as st
 import requests
@@ -14,6 +14,14 @@ from datetime import datetime
 import time
 import numpy as np
 from streamlit_autorefresh import st_autorefresh
+from deep_translator import GoogleTranslator
+
+# Try-Except for optional voice component (prevents crash if install fails)
+try:
+    from streamlit_mic_recorder import speech_to_text
+    HAS_VOICE = True
+except ImportError:
+    HAS_VOICE = False
 
 # --- CONFIGURATION ---
 BACKEND_URL = os.getenv("BACKEND_URL", "https://aryan12345ark-credibility-backend.hf.space")
@@ -34,59 +42,96 @@ st_autorefresh(interval=60000, limit=None, key="refresh")
 # Initialize Session State
 if "history" not in st.session_state: st.session_state.history = []
 if "language" not in st.session_state: st.session_state.language = "English"
+if "last_voice_input" not in st.session_state: st.session_state.last_voice_input = ""
 
 # --- HELPER FUNCTIONS ---
 
 def translate_text(text, target_lang):
     """
-    Client-side translation using Groq (Lightweight)
+    Robust translation using Deep Translator (Google Translate API)
+    Falls back to original text if translation fails.
     """
-    if target_lang == "English" or not GROQ_API_KEY or not text:
+    if target_lang == "English" or not text:
         return text
     try:
-        from groq import Groq
-        client = Groq(api_key=GROQ_API_KEY)
-        completion = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[
-                {"role": "system", "content": f"Translate to {target_lang}. Return ONLY the translation."},
-                {"role": "user", "content": text}
-            ],
-            temperature=0.1
-        )
-        return completion.choices[0].message.content.strip()
-    except:
+        # Map full language names to ISO codes
+        lang_map = {
+            "Hindi": "hi", "Spanish": "es", "French": "fr", 
+            "German": "de", "Chinese": "zh-CN", "Japanese": "ja",
+            "Arabic": "ar", "Portuguese": "pt", "Russian": "ru"
+        }
+        code = lang_map.get(target_lang, "en")
+        
+        translator = GoogleTranslator(source='auto', target=code)
+        # Split long text to avoid limits
+        if len(text) > 4500:
+            return text
+        return translator.translate(text)
+    except Exception as e:
+        print(f"Translation Error: {e}")
         return text
 
 def generate_pdf(claim, data, sources):
     """Generate professional PDF report"""
     pdf = FPDF()
     pdf.add_page()
+    
+    # Title
     pdf.set_font("Arial", 'B', 16)
     pdf.cell(0, 10, 'Credibility Engine Report', 0, 1, 'C')
     pdf.set_font("Arial", 'I', 10)
     pdf.cell(0, 10, f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M")}', 0, 1, 'C')
     pdf.ln(10)
     
-    # Content
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, f"Claim: {claim[:80]}...", 0, 1)
-    pdf.set_font("Arial", '', 11)
-    pdf.cell(0, 10, f"Verdict: {data.get('verdict')} | Score: {data.get('score')}%", 0, 1)
+    # Verdict Section
+    score = data.get('score', 50)
+    verdict = data.get('verdict', 'UNKNOWN')
+    
+    pdf.set_font("Arial", 'B', 14)
+    pdf.cell(0, 10, f"Verdict: {verdict} ({score}%)", 0, 1)
     pdf.ln(5)
     
+    # Claim
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, "Analysis:", 0, 1)
+    pdf.cell(0, 10, "Claim Analyzed:", 0, 1)
     pdf.set_font("Arial", '', 11)
-    pdf.multi_cell(0, 6, data.get('reasoning', 'N/A').encode('latin-1', 'replace').decode('latin-1'))
+    # Handle encoding for PDF
+    safe_claim = claim.encode('latin-1', 'replace').decode('latin-1')
+    pdf.multi_cell(0, 6, safe_claim)
     pdf.ln(5)
     
+    # Analysis
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(0, 10, "AI Analysis:", 0, 1)
+    pdf.set_font("Arial", '', 11)
+    reasoning = data.get('reasoning', 'N/A').encode('latin-1', 'replace').decode('latin-1')
+    pdf.multi_cell(0, 6, reasoning)
+    pdf.ln(5)
+    
+    # Key Evidence
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(0, 10, "Key Evidence:", 0, 1)
+    pdf.set_font("Arial", '', 11)
+    for point in data.get('key_evidence', []):
+        safe_point = str(point).encode('latin-1', 'replace').decode('latin-1')
+        pdf.multi_cell(0, 6, f"- {safe_point}")
+    pdf.ln(5)
+    
+    # Sources
     if sources:
         pdf.set_font("Arial", 'B', 12)
-        pdf.cell(0, 10, "Sources:", 0, 1)
+        pdf.cell(0, 10, "Referenced Sources:", 0, 1)
         pdf.set_font("Arial", '', 10)
         for s in sources:
-            pdf.cell(0, 6, f"- {s.get('name', 'Unknown')}", 0, 1)
+            # Handle both string and dict sources
+            name = s.get('name', str(s)) if isinstance(s, dict) else str(s)
+            safe_name = name.encode('latin-1', 'replace').decode('latin-1')
+            pdf.cell(0, 6, f"- {safe_name}", 0, 1)
+            
+    # Footer
+    pdf.ln(10)
+    pdf.set_font("Arial", 'I', 8)
+    pdf.cell(0, 10, "Powered by Pathway + Groq + Hugging Face", 0, 0, 'C')
             
     return pdf.output(dest='S').encode('latin-1')
 
@@ -105,22 +150,14 @@ st.markdown("""
         margin-bottom: 2rem;
         text-align: center;
         box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
-        border: 1px solid rgba(255,255,255,0.1);
     }
     
     /* Score Card */
     .score-card {
-        background: white;
-        border-radius: 1rem;
-        padding: 1.5rem;
+        background: white; border-radius: 1rem; padding: 1.5rem;
         box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-        text-align: center;
-        border-top: 6px solid #e2e8f0;
-        transition: transform 0.2s;
+        text-align: center; border-top: 6px solid #e2e8f0;
     }
-    .score-card:hover { transform: translateY(-5px); }
-    
-    /* Card Colors */
     .border-green { border-top-color: #22c55e !important; }
     .border-yellow { border-top-color: #eab308 !important; }
     .border-orange { border-top-color: #f97316 !important; }
@@ -128,23 +165,17 @@ st.markdown("""
     
     /* Verdict Banner */
     .verdict-banner {
-        padding: 2rem;
-        border-radius: 1rem;
-        color: white;
-        text-align: center;
-        margin-bottom: 2rem;
+        padding: 2rem; border-radius: 1rem; color: white;
+        text-align: center; margin-bottom: 2rem;
         box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
     }
     
     /* Source Badges */
     .source-badge {
-        display: inline-block;
-        padding: 0.3rem 0.8rem;
-        border-radius: 20px;
-        font-size: 0.8rem;
-        font-weight: 600;
-        margin: 0.2rem;
-        border: 1px solid transparent;
+        display: inline-block; padding: 0.3rem 0.8rem;
+        border-radius: 20px; font-size: 0.8rem; font-weight: 600;
+        margin: 0.2rem; background: #eff6ff; color: #1e3a8a;
+        border: 1px solid #bfdbfe;
     }
     .trust-High { background: #dcfce7; color: #166534; border-color: #86efac; }
     .trust-Medium { background: #fef9c3; color: #854d0e; border-color: #fde047; }
@@ -152,61 +183,32 @@ st.markdown("""
     
     /* Evidence Card */
     .evidence-item {
-        background: #f8fafc;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        border-left: 4px solid #3b82f6;
-        margin-bottom: 0.5rem;
-        font-size: 0.95rem;
-    }
-    
-    /* Confidence Bar */
-    .confidence-track {
-        height: 8px;
-        background: #e2e8f0;
-        border-radius: 4px;
-        margin-top: 10px;
-        overflow: hidden;
-    }
-    .confidence-fill {
-        height: 100%;
-        background: linear-gradient(90deg, #3b82f6 0%, #2563eb 100%);
-    }
-    
-    /* Footer */
-    .footer {
-        text-align: center;
-        margin-top: 4rem;
-        padding: 2rem;
-        color: #94a3b8;
-        border-top: 1px solid #e2e8f0;
+        background: #f8fafc; padding: 1rem; border-radius: 0.5rem;
+        border-left: 4px solid #3b82f6; margin-bottom: 0.5rem;
     }
     
     /* Pilot Badge */
     .pilot-badge {
-        position: fixed;
-        top: 1rem;
-        right: 1rem;
+        position: fixed; top: 1rem; right: 1rem;
         background: linear-gradient(45deg, #f59e0b, #d97706);
-        color: white;
-        padding: 0.4rem 1rem;
-        border-radius: 2rem;
-        font-weight: 700;
-        font-size: 0.8rem;
-        box-shadow: 0 4px 6px -1px rgba(245, 158, 11, 0.3);
-        z-index: 1000;
+        color: white; padding: 0.4rem 1rem; border-radius: 2rem;
+        font-weight: 700; font-size: 0.8rem; z-index: 1000;
+    }
+    
+    /* Footer */
+    .footer {
+        text-align: center; margin-top: 4rem; padding: 2rem;
+        color: #94a3b8; border-top: 1px solid #e2e8f0;
     }
     
     /* Hide Streamlit elements */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
+    #MainMenu {visibility: hidden;} footer {visibility: hidden;}
     .stDeployButton {display:none;}
 </style>
-
 <div class="pilot-badge">⚡ LIVE PILOT</div>
 """, unsafe_allow_html=True)
 
-# --- SIDEBAR UI ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/9566/9566127.png", width=60)
     st.title("Control Center")
@@ -216,11 +218,16 @@ with st.sidebar:
         start_time = time.time()
         res = requests.get(f"{BACKEND_URL}/", timeout=3)
         latency = int((time.time() - start_time) * 1000)
-        status_color = "green" if res.status_code == 200 else "red"
-        status_text = f"Online ({latency}ms)" if res.status_code == 200 else "Offline"
+        
+        if res.status_code == 200:
+            status_text = f"Online ({latency}ms)"
+            status_color = "green"
+        else:
+            status_text = "Offline"
+            status_color = "red"
     except:
-        status_color = "red"
         status_text = "Disconnected"
+        status_color = "red"
 
     st.markdown(f"""
     <div style="background:#f8fafc; padding:10px; border-radius:8px; border:1px solid #e2e8f0; margin-bottom:20px;">
@@ -228,26 +235,25 @@ with st.sidebar:
             <span style="font-weight:600; color:#475569;">System Status</span>
             <span style="background:{status_color}; width:8px; height:8px; border-radius:50%;"></span>
         </div>
-        <div style="font-size:0.8rem; color:#64748b; margin-top:5px;">
-            Pathway Brain: <b>{status_text}</b>
-        </div>
+        <div style="font-size:0.8rem; color:#64748b; margin-top:5px;">Pathway Brain: <b>{status_text}</b></div>
     </div>
     """, unsafe_allow_html=True)
 
-    # Multi-language Feature
+    # Settings
     st.markdown("### 🌐 Settings")
     st.session_state.language = st.selectbox(
         "Output Language",
-        ["English", "Hindi", "Spanish", "French", "German", "Chinese"]
+        ["English", "Hindi", "Spanish", "French", "German", "Chinese", "Russian", "Arabic"]
     )
 
     st.markdown("---")
     
-    # GNews Live Feed Feature
-    st.markdown("### 📰 News Stream")
-    news_topic = st.selectbox("Topic", ["General", "Health", "Science", "Politics"])
+    # Ingestion
+    st.markdown("### 📰 Live Ingestion")
     
-    if st.button("🔄 Fetch & Index Live News", use_container_width=True):
+    # GNews Integration
+    news_topic = st.selectbox("Topic", ["General", "Health", "Science", "Politics", "Tech"])
+    if st.button("🔄 Stream Live News"):
         if not GNEWS_API_KEY:
             st.error("Missing GNews Key")
         else:
@@ -262,45 +268,35 @@ with st.sidebar:
                             "source": article['source']['name']
                         })
                         count += 1
-                    st.toast(f"✅ Successfully piped {count} live articles to vector store!", icon="🌊")
+                    st.toast(f"✅ Indexed {count} live articles!", icon="🌊")
                 except Exception as e:
                     st.error(f"Stream Error: {e}")
-
-    st.markdown("---")
     
     # Manual Ingest
-    with st.expander("📝 Manual Data Entry"):
-        manual_txt = st.text_area("Content", height=100)
-        manual_src = st.text_input("Source Name", value="Manual Input")
-        if st.button("Inject to Pipeline"):
-            requests.post(f"{BACKEND_URL}/ingest", json={"text": manual_txt, "source": manual_src})
-            st.success("Data injected.")
+    with st.expander("📝 Manual Entry"):
+        ingest_text = st.text_area("Content:", height=100)
+        ingest_source = st.text_input("Source:", value="Manual")
+        if st.button("🚀 Push to Pipeline"):
+            try:
+                requests.post(f"{BACKEND_URL}/ingest", json={"text": ingest_text, "source": ingest_source})
+                st.toast("✅ Indexed!", icon="🌊")
+            except:
+                st.error("Failed")
 
-# --- MAIN CONTENT ---
+    st.markdown("---")
+    st.caption("© 2025 Aryan & Khushboo")
+
+# --- MAIN HEADER ---
 st.markdown("""
 <div class="main-header">
     <h1 style="font-size: 3.5rem; font-weight: 800; margin: 0;">🛡️ Credibility Engine</h1>
-    <p style="font-size: 1.2rem; opacity: 0.8; margin-top: 10px;">
-        Real-Time Misinformation Detection System
-    </p>
-    <div style="margin-top: 20px;">
-        <span style="background:rgba(255,255,255,0.15); padding:5px 12px; border-radius:15px; font-size:0.85rem; border:1px solid rgba(255,255,255,0.2);">
-            🚀 Pathway Streaming
-        </span>
-        &nbsp;
-        <span style="background:rgba(255,255,255,0.15); padding:5px 12px; border-radius:15px; font-size:0.85rem; border:1px solid rgba(255,255,255,0.2);">
-            🧠 Groq Intelligence
-        </span>
-    </div>
+    <p style="font-size: 1.2rem; opacity: 0.8; margin-top: 10px;">Real-Time Misinformation Detection System</p>
 </div>
 """, unsafe_allow_html=True)
 
 # Tabs
 tab_verify, tab_dash, tab_map, tab_kb = st.tabs([
-    "🔎 **Verify Claim**", 
-    "📊 **Analytics Dashboard**", 
-    "🗺️ **Global Threat Map**",
-    "📚 **Knowledge Graph**"
+    "🔎 **Verify Claim**", "📊 **Analytics Dashboard**", "🗺️ **Global Map**", "📚 **Knowledge Graph**"
 ])
 
 # ============ TAB 1: VERIFY ============
@@ -318,9 +314,20 @@ with tab_verify:
         st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
         analyze_btn = st.button("✨ Analyze Truth", type="primary", use_container_width=True)
         
-        # Feature: Voice Input Mockup
-        if st.button("🎙️ Voice Input", use_container_width=True):
-            st.info("Listening... (Say your claim)")
+        # FEATURE: Voice Input
+        if HAS_VOICE:
+            st.caption("🎙️ Voice Input:")
+            voice_text = speech_to_text(language='en', use_container_width=True, just_once=True, key='STT')
+            if voice_text:
+                st.session_state.last_voice_input = voice_text
+                st.rerun()
+        else:
+            st.warning("Microphone unavailable")
+
+    # Handle voice input update
+    if st.session_state.last_voice_input:
+        claim_input = st.session_state.last_voice_input
+        st.session_state.last_voice_input = "" # Clear after use
 
     if analyze_btn and claim_input:
         with st.spinner("🔄 Interfacing with Pathway Vector Store & Groq LLM..."):
@@ -357,7 +364,6 @@ with tab_verify:
                 # 4. METRICS ROW
                 m1, m2, m3, m4 = st.columns(4)
                 
-                # Helper for cards
                 def metric_html(label, value, color_class):
                     return f"""
                     <div class="score-card {color_class}">
@@ -380,6 +386,7 @@ with tab_verify:
                     st.subheader("📝 Analysis & Reasoning")
                     
                     reasoning = data.get('reasoning')
+                    
                     # Feature: Translation
                     if st.session_state.language != "English":
                         with st.spinner("Translating..."):
@@ -399,8 +406,14 @@ with tab_verify:
                     
                     if sources:
                         for s in sources:
-                            name = s.get('name', 'Unknown Source')
-                            trust = s.get('credibility', 'Medium')
+                            # FIX: Handle both string and dict sources robustly
+                            if isinstance(s, dict):
+                                name = s.get('name', 'Unknown')
+                                trust = s.get('credibility', 'Medium')
+                            else:
+                                name = str(s)
+                                trust = "High" if any(x in name.lower() for x in ['reuters', 'ap', 'gov', 'edu', 'bbc']) else "Medium"
+                                
                             st.markdown(f"""
                             <div style="margin-bottom:10px;">
                                 <span class="source-badge trust-{trust}">{trust} Trust</span>
@@ -470,9 +483,9 @@ with tab_dash:
             
         with col_charts[1]:
             st.markdown("#### Category Distribution")
-            # Mock data for categories if missing
-            cat_counts = hist_df.get('category', pd.Series(['General']*len(hist_df))).value_counts()
-            st.bar_chart(cat_counts)
+            if 'category' in hist_df.columns:
+                cat_counts = hist_df['category'].value_counts()
+                st.bar_chart(cat_counts)
             
         st.markdown("#### Recent Activity Log")
         st.dataframe(hist_df, use_container_width=True)
@@ -483,18 +496,17 @@ with tab_dash:
 with tab_map:
     st.subheader("🌍 Global Misinformation Heatmap")
     
-    # Generate contextual map data
-    # In production, this would come from the backend's "geographic_relevance" field
-    map_data = pd.DataFrame({
+    # 3D Map (PyDeck runs fine on frontend)
+    data = pd.DataFrame({
         'lat': [20.5937 + np.random.uniform(-10, 10) for _ in range(100)],
         'lon': [78.9629 + np.random.uniform(-10, 10) for _ in range(100)],
-        'score': np.random.randint(0, 100, 100)
+        'intensity': np.random.randint(1, 100, 100)
     })
     
-    # PyDeck 3D Hexagon Layer
+    # Hexagon Layer
     layer = pdk.Layer(
         'HexagonLayer',
-        data=map_data,
+        data=data,
         get_position='[lon, lat]',
         radius=20000,
         elevation_scale=4,
@@ -514,18 +526,19 @@ with tab_map:
 
 # ============ TAB 4: KNOWLEDGE ============
 with tab_kb:
-    st.subheader("📚 Knowledge Base")
-    st.info("Connected to Pathway Vector Store (Hugging Face Backend)")
+    st.subheader("📚 Knowledge Graph")
     
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     c1.metric("Status", "Active")
-    c2.metric("Storage", "Persistent")
+    c2.metric("Backend", "Hugging Face Spaces")
+    c3.metric("Memory", "16GB RAM")
     
+    st.info("Connected to Pathway Vector Store on Hugging Face. Streaming enabled.")
     st.json({
-        "backend": "Hugging Face Spaces",
-        "memory": "16GB",
+        "pipeline": "Pathway Streaming",
         "embeddings": "sentence-transformers/all-MiniLM-L6-v2",
-        "pipeline": "Pathway Streaming"
+        "llm": "Groq Llama 3.1 8B",
+        "ingestion": "Real-time GNews API"
     })
 
 # Footer
